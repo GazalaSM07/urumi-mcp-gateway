@@ -1,0 +1,26 @@
+images:
+  gateway: {repository: ghcr.io/YOUR_ORG/urumi-gateway, tag: "1.0.0", pullPolicy: IfNotPresent}
+  dashboard: {repository: ghcr.io/YOUR_ORG/urumi-dashboard, tag: "1.0.0", pullPolicy: IfNotPresent}
+  wooMcp: {repository: ghcr.io/YOUR_ORG/urumi-woo-mcp, tag: "1.0.0", pullPolicy: IfNotPresent}
+  demoMcp: {repository: ghcr.io/YOUR_ORG/urumi-demo-mcp, tag: "1.0.0", pullPolicy: IfNotPresent}
+  wordpress: {repository: ghcr.io/YOUR_ORG/urumi-wordpress, tag: "1.0.0", pullPolicy: IfNotPresent}
+hosts:
+  store: shop.example.com
+  dashboard: gateway.example.com
+  scheme: https
+ingress:
+  className: traefik
+  tls: true
+  tlsSecret: urumi-tls
+storage:
+  className: local-path
+  wordpress: 20Gi
+  mysql: 20Gi
+  gateway: 5Gi
+resources:
+  small:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 1, memory: 512Mi}
+  medium:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: 2, memory: 2Gi}

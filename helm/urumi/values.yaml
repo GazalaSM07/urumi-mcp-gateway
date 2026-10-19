@@ -1,0 +1,44 @@
+images:
+  gateway: {repository: urumi-gateway, tag: dev, pullPolicy: IfNotPresent}
+  dashboard: {repository: urumi-dashboard, tag: dev, pullPolicy: IfNotPresent}
+  wooMcp: {repository: urumi-woo-mcp, tag: dev, pullPolicy: IfNotPresent}
+  demoMcp: {repository: urumi-demo-mcp, tag: dev, pullPolicy: IfNotPresent}
+  wordpress: {repository: urumi-wordpress, tag: dev, pullPolicy: IfNotPresent}
+hosts:
+  store: urumi.local
+  dashboard: dashboard.urumi.local
+  scheme: http
+ingress:
+  className: nginx
+  tls: false
+  tlsSecret: urumi-tls
+storage:
+  className: ""
+  wordpress: 5Gi
+  mysql: 5Gi
+  gateway: 1Gi
+networkPolicy:
+  enabled: true
+secrets:
+  gateway: gateway-secrets
+  wordpress: wordpress-secrets
+  wooCommerce: woocommerce-api
+llm:
+  baseUrl: https://api.openai.com/v1
+  model: gpt-4o-mini
+  timeoutSeconds: 180
+ollama:
+  enabled: false
+  image: ollama/ollama:latest
+  model: qwen2.5:0.5b
+  storage: 3Gi
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {cpu: 2, memory: 1Gi}
+resources:
+  small:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+  medium:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: 1000m, memory: 1Gi}

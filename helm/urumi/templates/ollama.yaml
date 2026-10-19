@@ -1,0 +1,54 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ollama}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: ollama}}
+  template:
+    metadata: {labels: {app: ollama}}
+    spec:
+      containers:
+        - name: ollama
+          image: {{ .Values.ollama.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              /bin/ollama serve &
+              server_pid=$!
+              until /bin/ollama list >/dev/null 2>&1; do sleep 2; done
+              /bin/ollama pull "$OLLAMA_MODEL"
+              wait "$server_pid"
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+            - name: OLLAMA_MODEL
+              value: {{ .Values.ollama.model | quote }}
+          ports: [{name: http, containerPort: 11434}]
+          volumeMounts: [{name: models, mountPath: /root/.ollama}]
+          startupProbe:
+            httpGet: {path: /api/version, port: 11434}
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "/bin/ollama list | grep -Fq \"$OLLAMA_MODEL\""]
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: {path: /api/version, port: 11434}
+            periodSeconds: 20
+          resources: {{- toYaml .Values.ollama.resources | nindent 12 }}
+      volumes:
+        - name: models
+          persistentVolumeClaim: {claimName: ollama-models}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: ollama}
+spec:
+  type: ClusterIP
+  selector: {app: ollama}
+  ports: [{name: http, port: 11434, targetPort: 11434}]
+{{- end }}
