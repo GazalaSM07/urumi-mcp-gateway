@@ -17,6 +17,7 @@ This repository does not include the optional multi-store provisioning bonus.
 
 For a guided walkthrough with commands explained in order, see [Step-by-step build and demo guide](docs/step-by-step.md).
 For a requirement-by-requirement view of implemented code versus live evidence and submission items, see [Assignment compliance tracker](docs/assignment-compliance.md).
+For a concise recording plan that avoids exposing credentials and distinguishes verified behavior from remaining checks, see [Assignment demo script](docs/demo-script.md).
 
 Install Docker Desktop, Kind, kubectl, Helm 3, and PowerShell. The image build downloads the pinned WordPress/WooCommerce base and Node/Python dependencies, so Docker needs network access.
 
@@ -70,15 +71,13 @@ Install Docker Desktop, Kind, kubectl, Helm 3, and PowerShell. The image build d
    kubectl -n urumi rollout status deployment/gateway
    ```
 
-   The chart installs `woo-mcp-gateway-only`. Verify that the gateway can reach WooCommerce MCP and the inventory pod cannot:
+The chart installs one gateway-only ingress policy per MCP upstream. Policy ports match destination pod ports (metrics' Service port 8003 targets pod port 8002). The main Kind cluster created from `kind.yaml` uses kindnet, which does not enforce NetworkPolicies. To verify the policies, prepare an isolated cluster using `kind-policy-check.yaml` with Calico installed, then run this from PowerShell while its Docker node is running:
 
-   ```bash
-   kubectl -n urumi get networkpolicy
-   kubectl -n urumi exec deployment/gateway -- python -c 'import urllib.request; print(urllib.request.urlopen("http://woo-mcp:8001/healthz", timeout=5).status)'
-   kubectl -n urumi exec deployment/inventory-mcp -- python -c 'import socket,sys; socket.create_connection(("woo-mcp",8001),timeout=3); print("UNEXPECTEDLY REACHABLE"); sys.exit(1)'
+   ```powershell
+   .\scripts\verify-calico-upstream-policies.ps1
    ```
 
-   The gateway request should print `200`. The inventory request should time out (an exec error from the timed-out connection is expected), demonstrating that Calico enforces the policy. The policy permits WooCommerce MCP ingress only from pods labeled `app: gateway`.
+   The script applies the same selectors and pod ports as the chart in a dedicated test namespace. It must report gateway access passing and a non-gateway peer blocked for WooCommerce, inventory, and metrics. This checks Calico enforcement and chart policy semantics; it does not deploy the full Helm release on Calico. Do not infer enforcement from NetworkPolicy objects in the main kindnet cluster.
 
 7. Add this line to the Windows hosts file (run an editor as Administrator):
 
@@ -102,7 +101,9 @@ The WooCommerce server is registered in the gateway at install time. The REST ke
    kubectl -n urumi rollout restart deployment/woo-mcp
    ```
 
-The credentials are only mounted into the WooCommerce MCP pod. That service is a ClusterIP and has no Ingress. Calico enforces the chart's NetworkPolicy, which permits inbound WooCommerce MCP traffic only from the gateway pod; install a policy-capable CNI in production as well. The adapter calls WooCommerce REST at `http://wordpress/wp-json/wc/v3`; the gateway calls the adapter over the cluster network. This keeps the WooCommerce API credential away from browsers and MCP clients. In production, use TLS between the adapter and store if they cross an untrusted network.
+The credentials are only mounted into the WooCommerce MCP pod. All three MCP services are ClusterIP Services with no Ingress. The chart defines one ingress policy per MCP service, permitting calls only from the gateway pod on that pod's port. Kubernetes enforces these policies only when the cluster CNI supports NetworkPolicy. The isolated Calico policy-check cluster has passed gateway-allowed and peer-blocked checks for all three policy rules; the main `kind-urumi` cluster uses kindnet. The WooCommerce adapter calls the store REST API; the gateway calls the adapter over the cluster network. This keeps the WooCommerce API credential away from browsers and MCP clients. In production, use TLS between the adapter and store if they cross an untrusted network.
+
+When adding another upstream from **Servers**, enter a Bearer token directly, a `Basic ...` authorization value, or a custom header in the form `header:Header-Name: value` (for example, `header:X-API-Key: token-value`). The gateway sends the configured credential only to that upstream and encrypts it in its database.
 
 ## Using the dashboard and required demo flow
 
@@ -119,14 +120,14 @@ The initial admin email is `admin@urumi.local`; its password is the one entered 
 9. To demonstrate upstream failure, delete the inventory pod and immediately refresh server status while Kubernetes replaces it:
 
    ```powershell
-   kubectl -n urumi delete pod -l app=inventory-mcp
+   kubectl -n urumi scale deployment/inventory-mcp --replicas=0
    ```
 
-   The dashboard reports `Unreachable` during the restart window. Gateway tool discovery reports that upstream separately and continues listing/calling the other servers. The MCP endpoint is `http://dashboard.urumi.local/mcp`; on production it uses the HTTPS dashboard hostname.
+   The dashboard reports `Unreachable`. Gateway tool discovery reports that upstream separately and continues listing/calling the other servers. Restore inventory after the check with `kubectl -n urumi scale deployment/inventory-mcp --replicas=1` and wait for its rollout. The MCP endpoint is `http://dashboard.urumi.local/mcp`; on production it uses the HTTPS dashboard hostname.
 
 ## Production-like deployment (k3s)
 
-Install k3s with its Ingress controller and local-path StorageClass, build and push the five images from `backend/`, `dashboard/`, `services/woo-mcp/`, `services/demo-mcp/`, and `store/`, then update the image repositories/tags in `values-prod.yaml`. Point DNS at the VPS and use the installed Ingress class (Traefik by default in k3s). Create a TLS Secret (or configure cert-manager), then create `gateway-secrets` and `wordpress-secrets` with the same key names used by the local setup script. Create `woocommerce-api` after setting up the store REST key. Use an external secret manager and enable Kubernetes Secret encryption at rest for a real deployment.
+Install k3s with its Ingress controller and local-path StorageClass, build and push the five images from `backend/`, `dashboard/`, `services/woo-mcp/`, `services/demo-mcp/`, and `store/`, then update the image repositories/tags in `values-prod.yaml`. Set `adminEmail` to the production gateway admin's email and set both hostnames to DNS names you control. Point DNS at the VPS and use the installed Ingress class (Traefik by default in k3s). The chart references the same `urumi-tls` Secret from both Ingresses, so its certificate must cover both the store and dashboard hostnames; cert-manager can manage that certificate. Then create `gateway-secrets` and `wordpress-secrets` with the same key names used by the local setup script. Create `woocommerce-api` after setting up the store REST key. Use an external secret manager and enable Kubernetes Secret encryption at rest for a real deployment.
 
 Install or upgrade with:
 
@@ -144,7 +145,7 @@ Read [System design and tradeoffs](docs/system-design.md) and [Threat model](doc
 
 - Tool names are prefixed `server__tool`, so upstream name collisions are deterministic and visible.
 - Each server discovery/call has a five-second timeout. Failed upstreams are isolated and appear as status failures; other servers remain available.
-- The gateway negotiates upstream MCP sessions and accepts JSON or SSE JSON-RPC responses. Its public `/mcp` endpoint is exposed through the dashboard Ingress; upstream MCP services have only internal ClusterIP Services. A NetworkPolicy restricts WooCommerce MCP ingress to the gateway pod when the cluster CNI enforces NetworkPolicies.
+- The gateway negotiates upstream MCP sessions and accepts JSON or SSE JSON-RPC responses. Its public `/mcp` endpoint is exposed through the dashboard Ingress; upstream MCP services have only internal ClusterIP Services. NetworkPolicies restrict all three MCP upstreams to ingress from the gateway pod when the cluster CNI enforces NetworkPolicies.
 - API keys and dashboard sessions are random values; only SHA-256 hashes are stored. User passwords use PBKDF2. Upstream static credentials are Fernet-encrypted in the gateway's persistent SQLite database using `FERNET_KEY`; the encryption key and LLM key are Kubernetes Secrets.
 - The gateway never forwards a client's key to an upstream. It adds only the upstream's stored credential. An upstream credential is shared: a member can invoke every enabled tool available to that key, so grant WooCommerce only the capabilities this team should have.
 - URL registration requires HTTPS for public hosts, rejects non-global resolved IPs and redirects, and accepts the named demo MCP services or other MCP service DNS names in the `urumi` namespace (except the gateway, database and WordPress). This is a starter SSRF defense; production still needs egress policy and DNS-rebinding protections.
@@ -152,3 +153,14 @@ Read [System design and tradeoffs](docs/system-design.md) and [Threat model](doc
 ## Known scope limits
 
 Single gateway replica and one WooCommerce store; no OAuth, per-tool authorization, rate limiting, multi-store provisioning or production VPS deployment is included in this local workspace. The demo metrics/inventory tools return sample values. Use a persistent StorageClass, real image registry and external secret management before production.
+
+## Bonus and standout work
+
+No optional multi-store provisioning or hosted-MCP-container bonus was implemented. The following standout work was attempted as part of the core design and its verification:
+
+- **Upstream isolation and failure handling:** tool names use the `server__tool` scheme, discovery/calls have a five-second timeout, and one unavailable upstream is reported without hiding healthy upstreams. See `backend/app/main.py` and [System design and tradeoffs](docs/system-design.md).
+- **Credential and URL protections:** API keys are stored as hashes; upstream credentials are Fernet-encrypted; public upstream URLs require HTTPS and are checked against restricted IP ranges. See [Threat model](docs/threat-model.md).
+- **NetworkPolicy enforcement evidence:** gateway-only policy behavior for WooCommerce, Inventory and Metrics was tested with Calico in the isolated `kind-urumi-policy-check` cluster. The main Kind app cluster's `kindnet` does not itself prove enforcement. See the Calico section in [Assignment compliance tracker](docs/assignment-compliance.md) and `scripts/verify-calico-upstream-policies.ps1`.
+- **Production-like deployment path:** the same Helm chart has k3s-oriented values and documented DNS, Ingress/TLS, storage, secrets, upgrade and rollback steps. A live VPS deployment has not been performed; production image and domain values remain placeholders. See `helm/urumi/values-prod.yaml` and the production section in this README.
+
+These are implementation/documentation claims, not a substitute for the live evidence listed in [Assignment demo script](docs/demo-script.md). Do not describe a live VPS deployment or multi-store provisioning as completed.

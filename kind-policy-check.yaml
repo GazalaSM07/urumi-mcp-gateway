@@ -1,0 +1,9 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+networking:
+  # Use Calico for actual NetworkPolicy enforcement. Keep this isolated test
+  # cluster off the host's 80/443 ports used by the main urumi cluster.
+  disableDefaultCNI: true
+  podSubnet: 192.168.0.0/16

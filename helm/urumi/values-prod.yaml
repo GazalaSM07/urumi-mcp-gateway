@@ -8,6 +8,7 @@ hosts:
   store: shop.example.com
   dashboard: gateway.example.com
   scheme: https
+adminEmail: admin@gateway.example.com
 ingress:
   className: traefik
   tls: true

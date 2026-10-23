@@ -35,9 +35,9 @@ spec:
             - {name: WP_ADMIN_EMAIL, valueFrom: {secretKeyRef: {name: {{ .Values.secrets.wordpress }}, key: WP_ADMIN_EMAIL}}}
             - {name: WORDPRESS_CONFIG_EXTRA, value: "define('WP_HOME', getenv('WP_HOME')); define('WP_SITEURL', getenv('WP_HOME'));"}
           volumeMounts: [{name: content, mountPath: /var/www/html}]
-          readinessProbe: {httpGet: {path: /wp-login.php, port: 80}, initialDelaySeconds: 20, periodSeconds: 10}
-          startupProbe: {httpGet: {path: /wp-login.php, port: 80}, failureThreshold: 60, periodSeconds: 10}
-          livenessProbe: {httpGet: {path: /wp-login.php, port: 80}, initialDelaySeconds: 50, periodSeconds: 20}
+          readinessProbe: {httpGet: {path: /wp-login.php, port: 80}, initialDelaySeconds: 20, periodSeconds: 10, timeoutSeconds: 5}
+          startupProbe: {httpGet: {path: /wp-login.php, port: 80}, failureThreshold: 60, periodSeconds: 10, timeoutSeconds: 5}
+          livenessProbe: {httpGet: {path: /wp-login.php, port: 80}, initialDelaySeconds: 50, periodSeconds: 20, timeoutSeconds: 5}
           resources: {{- toYaml .Values.resources.medium | nindent 12 }}
           securityContext: {allowPrivilegeEscalation: false}
       volumes: [{name: content, persistentVolumeClaim: {claimName: wordpress-content}}]

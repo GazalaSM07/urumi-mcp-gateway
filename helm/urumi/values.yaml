@@ -1,5 +1,5 @@
 images:
-  gateway: {repository: urumi-gateway, tag: dev, pullPolicy: IfNotPresent}
+  gateway: {repository: urumi-gateway, tag: dev-upstream-isolation, pullPolicy: IfNotPresent}
   dashboard: {repository: urumi-dashboard, tag: dev, pullPolicy: IfNotPresent}
   wooMcp: {repository: urumi-woo-mcp, tag: dev, pullPolicy: IfNotPresent}
   demoMcp: {repository: urumi-demo-mcp, tag: dev, pullPolicy: IfNotPresent}
@@ -8,6 +8,7 @@ hosts:
   store: urumi.local
   dashboard: dashboard.urumi.local
   scheme: http
+adminEmail: admin@urumi.local
 ingress:
   className: nginx
   tls: false

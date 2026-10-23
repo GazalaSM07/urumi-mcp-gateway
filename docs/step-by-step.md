@@ -14,7 +14,7 @@ The request path is:
 6. WooCommerce MCP translates its five tools into WooCommerce REST API calls. WordPress reads/writes MySQL; the result returns through the same path.
 7. The gateway records who called which tool, the time, duration and outcome.
 
-The browser never talks directly to WooCommerce MCP. The WooCommerce MCP endpoint, demo MCP endpoints, gateway API and MySQL Services are internal ClusterIP Services. Ingress exposes only the storefront and dashboard. The Helm chart adds a NetworkPolicy that allows WooCommerce MCP ingress only from the gateway. The local cluster uses Calico, and the guide includes a live allowed/blocked connectivity check.
+The browser never talks directly to any MCP upstream. The WooCommerce MCP endpoint, demo MCP endpoints, gateway API and MySQL Services are internal ClusterIP Services. Ingress exposes only the storefront and dashboard. The Helm chart adds a NetworkPolicy for each MCP upstream, allowing ingress only from the gateway on that pod's port. The fresh-cluster setup below installs Calico before the workloads; an existing cluster's CNI must be checked independently. The allowed/blocked connectivity checks are the evidence that enforcement works.
 
 ## 2. Prepare a local Kubernetes cluster
 
@@ -191,17 +191,22 @@ Revoke B's key from the admin dashboard. Call `tools/list` again; the gateway sh
 
 Disable `metrics` in the admin's **Servers** tab. Refresh MCP tools from the client and **Tools** in the dashboard: metrics tools should disappear, while WooCommerce and inventory remain. Re-enable metrics.
 
-Delete the inventory pod:
+Scale the inventory deployment down without deleting any resources:
 
 ```powershell
-kubectl -n urumi delete pod -l app=inventory-mcp
+kubectl -n urumi scale deployment/inventory-mcp --replicas=0
 ```
 
-During the short replacement window, refresh dashboard status. It should show inventory as `Unreachable`, while tools/calls from WooCommerce and metrics still work. Kubernetes restarts the pod; wait for it to become ready before continuing.
+Refresh dashboard status. It should show inventory as `Unreachable`, while tools/calls from WooCommerce and metrics still work. Restore inventory after the check:
+
+```powershell
+kubectl -n urumi scale deployment/inventory-mcp --replicas=1
+kubectl -n urumi rollout status deployment/inventory-mcp
+```
 
 ## 13. Prepare the production-like k3s version
 
-Build/tag/push the same five images to a registry you control. Edit `helm/urumi/values-prod.yaml` with the image paths/tags and your real store/dashboard DNS names. Create the referenced Kubernetes Secrets in the `urumi` namespace; create a TLS secret or use cert-manager. Confirm the k3s StorageClass supports the requested PVC sizes. Then install the same chart:
+Build/tag/push the same five images to a registry you control. Edit `helm/urumi/values-prod.yaml` with the image paths/tags, your real store/dashboard DNS names, and `adminEmail`. Create the referenced Kubernetes Secrets in the `urumi` namespace. The chart uses the same TLS Secret for both Ingress hosts, so its certificate must include both DNS names; cert-manager can manage it. Confirm the k3s StorageClass supports the requested PVC sizes. Then install the same chart:
 
 ```sh
 helm upgrade --install urumi ./helm/urumi -n urumi --create-namespace -f ./helm/urumi/values-prod.yaml

@@ -160,7 +160,13 @@ def credential_headers(server):
     headers={'content-type':'application/json','accept':'application/json, text/event-stream'}
     if server['credential']:
         credential=fernet.decrypt(server['credential'].encode()).decode()
-        if ':' in credential and server['name']=='woocommerce':
+        if credential.lower().startswith('header:'):
+            header_name,separator,header_value=credential[7:].partition(':')
+            header_name=header_name.strip(); header_value=header_value.strip()
+            if not separator or not re.fullmatch(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+",header_name) or '\r' in header_value or '\n' in header_value:
+                raise RuntimeError('Invalid static header credential; use header:Header-Name: value')
+            headers[header_name]=header_value
+        elif ':' in credential and server['name']=='woocommerce':
             a,b=credential.split(':',1); headers['authorization']='Basic '+__import__('base64').b64encode(f'{a}:{b}'.encode()).decode()
         elif credential.lower().startswith('bearer ') or credential.lower().startswith('basic '): headers['authorization']=credential
         else: headers['authorization']='Bearer '+credential
@@ -179,7 +185,7 @@ async def upstream(server,method,params=None):
     key=(server['id'],server['url']); lock=upstream_locks.setdefault(key,asyncio.Lock())
     async with lock:
         headers=credential_headers(server)
-        async with httpx.AsyncClient(timeout=5,follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=30,follow_redirects=False) as client:
             async def post(m,p,request_id):
                 req={'jsonrpc':'2.0','method':m,'params':p or {}}
                 if request_id is not None: req['id']=request_id
@@ -199,11 +205,14 @@ async def tools_for(server):
     if 'error' in result: raise RuntimeError(result['error'].get('message','upstream error'))
     return result.get('result',{}).get('tools',[])
 async def all_tools():
+    servers=get_servers()
+    results=await asyncio.gather(*(tools_for(s) for s in servers),return_exceptions=True)
     collected=[]; failures=[]
-    for s in get_servers():
-        try:
-            for t in await tools_for(s): collected.append((s,t))
-        except Exception as e: failures.append({'server':s['name'],'error':str(e)[:200]})
+    for server,result in zip(servers,results):
+        if isinstance(result,Exception):
+            failures.append({'server':server['name'],'error':str(result)[:200]})
+            continue
+        collected.extend((server,tool) for tool in result)
     return collected,failures
 def exposed(name,tool): return name+'__'+tool['name']
 def cross_server_fallback_args(server_name,tool_name,message):
@@ -212,6 +221,13 @@ def cross_server_fallback_args(server_name,tool_name,message):
     if server_name.lower()=='metrics' and tool_name=='get_store_metrics':
         period=re.search(r'\b(today|week|month)\b',text,re.I)
         return {'period':period.group(1).lower() if period else 'today'}
+    if server_name.lower()=='inventory' and tool_name=='get_restock_eta':
+        match=re.search(r'\b(?:restock|replenish|eta)\b.*?\bfor\s+(.+?)(?=\s*[,;.!?]|$)',text,re.I)
+        if match:
+            product=match.group(1).strip().strip(chr(34)+chr(39)+'“”')
+            product=re.sub(r'^(?:the\s+)?product\s+(?:named\s+)?|^the\s+','',product,flags=re.I).strip()
+            if product: return {'product':product}
+
     if server_name.lower()=='inventory' and tool_name=='search_inventory_notes':
         match=re.search(r'\binventory(?:\s+notes?)?\s+for\s+(.+?)(?=\s*(?:[,;.!?]|\band\b)|$)',text,re.I)
         if match:
@@ -225,7 +241,11 @@ def select_chat_tools(message, tools):
     # models are much more reliable when they do not have to choose from every
     # WooCommerce operation as well.
     cross_server=set()
-    if re.search(r'\b(inventory|stock|restock|availability|inventory notes)\b',text):
+    if re.search(r'\b(restock|replenish|eta)\b',text):
+        cross_server.add(('inventory','get_restock_eta'))
+    elif re.search(r'\binventory notes?\b',text):
+        cross_server.add(('inventory','search_inventory_notes'))
+    elif re.search(r'\b(inventory|stock|availability)\b',text):
         cross_server.add(('inventory','search_inventory_notes'))
     if re.search(r'\b(metrics|sessions|conversion|store metrics|revenue)\b',text):
         metrics_tool='get_daily_revenue' if re.search(r'\brevenue\b',text) and re.search(r'\b(date|dated|on)\b',text) else 'get_store_metrics'
@@ -324,14 +344,15 @@ def audit(user=Depends(auth)):
     return [dict(x) for x in rows]
 @app.get('/api/status')
 async def status(user=Depends(auth)):
-    output=[]
-    for s in get_servers(False):
-        if not s['enabled']: state='Disabled'; count=0
+    servers=get_servers(False)
+    async def inspect(server):
+        if not server['enabled']:
+            state='Disabled'; count=0
         else:
-            try: count=len(await tools_for(s)); state='Connected'
+            try: count=len(await tools_for(server)); state='Connected'
             except Exception: state='Unreachable'; count=0
-        output.append({'id':s['id'],'name':s['name'],'url':s['url'],'enabled':bool(s['enabled']),'status':state,'toolCount':count})
-    return output
+        return {'id':server['id'],'name':server['name'],'url':server['url'],'enabled':bool(server['enabled']),'status':state,'toolCount':count}
+    return await asyncio.gather(*(inspect(server) for server in servers))
 @app.post('/api/chat')
 async def chat(x:ChatInput,user=Depends(auth)):
     api_key=os.getenv('OPENAI_API_KEY'); base=os.getenv('LLM_BASE_URL','https://api.openai.com/v1'); model=os.getenv('LLM_MODEL','gpt-4o-mini')
@@ -353,6 +374,15 @@ async def chat(x:ChatInput,user=Depends(auth)):
     if api_key: llm_headers['authorization']='Bearer '+api_key
     # Local CPU models can take longer than hosted models, especially on the
     # first request while loading weights. Keep this configurable per deployment.
+    if narrowed and len(tools) == 1 and exposed(tools[0][0]['name'], tools[0][1]) == 'woocommerce__list_orders':
+        order_server, order_tool = tools[0]
+        order_args = {'page': 1, 'per_page': 5}
+        if re.search(r"\b(today|today's|this day)\b", x.message.lower()):
+            order_args.update({'after': start.isoformat(), 'before': end.isoformat()})
+        value = await do_call(order_server, order_tool['name'], order_args, user)
+        name = exposed(order_server['name'], order_tool)
+        return {'answer': direct_tool_answer(name, value), 'toolsUsed': [name]}
+
     llm_timeout=float(os.getenv('LLM_TIMEOUT_SECONDS','180'))
     async with httpx.AsyncClient(timeout=llm_timeout) as client:
         for _ in range(6):
@@ -403,6 +433,13 @@ async def chat(x:ChatInput,user=Depends(auth)):
                 return {'answer':answer,'toolsUsed':used}
             for call in calls:
                 name=call['function']['name']; args=json.loads(call['function'].get('arguments') or '{}')
+                if name == 'inventory__get_restock_eta':
+                    product_match = re.search(r'\bfor\s+(.+?)(?=\s*[,;.!?]|$)', x.message, re.I)
+                    if product_match:
+                        product = product_match.group(1).strip().strip(chr(34)+chr(39)+'“”')
+                        product = re.sub(r'^(?:the\s+)?product\s+(?:named\s+)?', '', product, flags=re.I).strip().strip(chr(34)+chr(39)+'“”')
+                        if product:
+                            args = {'product': product}
                 if name.endswith('__list_orders') and re.search(r'\b(today|today\'s|this day)\b',x.message.lower()):
                     args.update({'after':start.isoformat(),'before':end.isoformat()})
                 used.append(name)
